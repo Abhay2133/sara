@@ -7,11 +7,12 @@
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sara/main.dart';
 
 void main() {
   testWidgets('App loads and displays title', (WidgetTester tester) async {
-    await tester.pumpWidget(const SaraApp());
+    await tester.pumpWidget(const ProviderScope(child: SaraApp()));
 
     expect(find.text('Sara Assistant'), findsNothing);
     expect(find.text('SARA'), findsOneWidget);
