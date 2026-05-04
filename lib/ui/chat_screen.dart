@@ -6,21 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sara/models/chat_session.dart';
 import 'package:sara/models/model_config.dart';
 import 'package:sara/services/gemma_service.dart';
 import 'package:sara/services/model_config_service.dart';
+import 'package:sara/services/session_provider.dart';
+import 'package:sara/ui/chat_drawer.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
-class ChatMessage {
-  final String text;
-  final bool isUser;
-
-  ChatMessage({required this.text, required this.isUser});
-}
-
-final messagesProvider = StateProvider<List<ChatMessage>>((ref) => []);
 final isProcessingProvider = StateProvider<bool>((ref) => false);
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -288,54 +283,88 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
+    // Ensure we have an active session
+    ChatSession? activeSession = ref.read(activeSessionProvider);
+    ChatSession session;
+    if (activeSession == null) {
+      session = SessionManager.createNewSession();
+      ref.read(gemmaServiceProvider).resetChat();
+    } else {
+      session = activeSession;
+    }
+    
     _controller.clear();
-    ref.read(messagesProvider.notifier).update((state) => [...state, ChatMessage(text: text, isUser: true)]);
+    
+    // Add user message
+    final updatedMessages = [...session.messages, ChatMessage(text: text, isUser: true)];
+    
+    // Auto-update title if it's the first message
+    String newTitle = session.title;
+    if (session.messages.isEmpty) {
+      newTitle = text.length > 20 ? '${text.substring(0, 20)}...' : text;
+    }
+
+    session = session.copyWith(
+      messages: updatedMessages,
+      title: newTitle,
+      updatedAt: DateTime.now(),
+    );
+    ref.read(activeSessionProvider.notifier).state = session;
+    ref.read(historyListProvider.notifier).saveSession(session);
+
     ref.read(isProcessingProvider.notifier).state = true;
     _scrollToBottom();
 
     String currentAiResponse = "";
-    final aiMessageIndex = ref.read(messagesProvider).length;
-    ref.read(messagesProvider.notifier).update((state) => [...state, ChatMessage(text: "", isUser: false)]);
-try {
-  final gemma = ref.read(gemmaServiceProvider);
-  await for (final chunk in gemma.sendMessage(
-    text,
-    _handleToolCall,
-    onActionChanged: (action) => ref.read(currentActionProvider.notifier).state = action,
-  )) {
-    currentAiResponse += chunk;
+    
+    // Add placeholder AI message
+    final messagesWithAiPlaceholder = [...session.messages, ChatMessage(text: "", isUser: false)];
+    final aiMessageIndex = messagesWithAiPlaceholder.length - 1;
+    
+    ref.read(activeSessionProvider.notifier).state = session.copyWith(messages: messagesWithAiPlaceholder);
 
-    // Robust filter for internal tool-calling JSON metadata
-    String displayResponse = currentAiResponse.replaceAll(
-      RegExp(r'\{"role":"assistant",\s*"tool_calls":\[\{.*\}\]\}'), 
-      ''
-    ).trim();
+    try {
+      final gemma = ref.read(gemmaServiceProvider);
+      await for (final chunk in gemma.sendMessage(
+        text,
+        _handleToolCall,
+        onActionChanged: (action) => ref.read(currentActionProvider.notifier).state = action,
+      )) {
+        currentAiResponse += chunk;
 
-    final currentMessages = [...ref.read(messagesProvider)];
-    currentMessages[aiMessageIndex] = ChatMessage(text: displayResponse, isUser: false);
-    ref.read(messagesProvider.notifier).state = currentMessages;
-    _scrollToBottom();
-  }
-} catch (e) {
+        String displayResponse = currentAiResponse.replaceAll(
+          RegExp(r'\{"role":"assistant",\s*"tool_calls":\[\{.*\}\]\}'), 
+          ''
+        ).trim();
 
+        final currentMessages = [...ref.read(activeSessionProvider)!.messages];
+        currentMessages[aiMessageIndex] = ChatMessage(text: displayResponse, isUser: false);
+        
+        ref.read(activeSessionProvider.notifier).state = ref.read(activeSessionProvider)!.copyWith(messages: currentMessages);
+        _scrollToBottom();
+      }
+      
+      // Save final AI response
+      final finalSession = ref.read(activeSessionProvider)!;
+      ref.read(historyListProvider.notifier).saveSession(finalSession);
+      
+    } catch (e) {
       debugPrint('Error sending message: $e');
-      ref.read(messagesProvider.notifier).update((state) {
-        final newState = [...state];
-        newState[aiMessageIndex] = ChatMessage(text: 'Error: $e', isUser: false);
-        return newState;
-      });
+      final errorMessages = [...ref.read(activeSessionProvider)!.messages];
+      errorMessages[aiMessageIndex] = ChatMessage(text: 'Error: $e', isUser: false);
+      ref.read(activeSessionProvider.notifier).state = ref.read(activeSessionProvider)!.copyWith(messages: errorMessages);
     } finally {
       ref.read(isProcessingProvider.notifier).state = false;
       ref.read(currentActionProvider.notifier).state = null;
     }
-
   }
 
   @override
   Widget build(BuildContext context) {
     final isProcessing = ref.watch(isProcessingProvider);
     final gemma = ref.read(gemmaServiceProvider);
-    final messages = ref.watch(messagesProvider);
+    final activeSession = ref.watch(activeSessionProvider);
+    final messages = activeSession?.messages ?? [];
 
     return Scaffold(
       extendBodyBehindAppBar: false,
@@ -355,6 +384,7 @@ try {
           ),
         ),
       ),
+      drawer: const ChatDrawer(),
       body: Container(
         decoration: const BoxDecoration(
           gradient: RadialGradient(
@@ -385,7 +415,10 @@ try {
                       )
                     : Column(
                         children: [
-                          _buildControlPanel(gemma.isInitialized),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(maxHeight: constraints.maxHeight * 0.4),
+                            child: _buildControlPanel(gemma.isInitialized),
+                          ),
                           const SizedBox(height: 16),
                           Expanded(child: _buildChatPanel(gemma.isInitialized, messages, isProcessing)),
                         ],
