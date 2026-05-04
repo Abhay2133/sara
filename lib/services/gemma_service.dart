@@ -10,6 +10,7 @@ final currentActionProvider = StateProvider<String?>((ref) => null);
 
 class GemmaService {
   InferenceChat? _chat;
+  InferenceModel? _model;
   bool _isInitialized = false;
 
   bool get isInitialized => _isInitialized;
@@ -29,7 +30,17 @@ class GemmaService {
         .fromFile(modelPath)
         .install();
 
-    final model = await FlutterGemma.getActiveModel(maxTokens: 1024);
+    _model = await FlutterGemma.getActiveModel(maxTokens: 1024);
+
+    await resetChat();
+
+    _isInitialized = true;
+  }
+
+  Future<void> resetChat() async {
+    if (_model == null) {
+      return;
+    }
 
     final tools = availableTools
         .map((t) => Tool(
@@ -39,14 +50,12 @@ class GemmaService {
             ))
         .toList();
 
-    _chat = await model.createChat(
+    _chat = await _model!.createChat(
       tools: tools,
       supportsFunctionCalls: true,
       toolChoice: ToolChoice.auto,
       modelType: ModelType.gemma4,
     );
-
-    _isInitialized = true;
   }
 
   Future<Directory> getModelsDirectory() async {
