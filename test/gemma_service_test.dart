@@ -31,5 +31,9 @@ void main() {
         throwsA(isA<Exception>()),
       );
     });
+
+    test('resetChat does not throw when model is null', () async {
+      expect(() => gemmaService.resetChat(), returnsNormally);
+    });
   });
 }
